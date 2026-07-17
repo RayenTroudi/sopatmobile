@@ -54,7 +54,7 @@ class _ExpenseFormScreenState extends State<ExpenseFormScreen> {
     if (SopatApi.instance.isLoggedIn) return true;
     final ok = await Navigator.push<bool>(
       context,
-      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      MaterialPageRoute(builder: (_) => const LoginScreen(popOnSuccess: true)),
     );
     return ok == true;
   }

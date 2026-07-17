@@ -3,14 +3,18 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/ocr_result.dart';
 import '../models/project.dart';
 import '../services/ocr_service.dart';
+import '../services/sopat_api.dart';
+import '../theme.dart';
 import 'expense_form_screen.dart';
+import 'login_screen.dart';
 
-/// Main screen: capture or pick an image, send it to the OCR backend,
-/// display the recognized handwriting.
+/// Écran principal : photographier ou choisir une image, l'envoyer au
+/// backend OCR, afficher le texte reconnu puis créer la dépense SOPAT.
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
 
@@ -19,9 +23,10 @@ class ScanScreen extends StatefulWidget {
 }
 
 class _ScanScreenState extends State<ScanScreen> {
-  // 10.0.2.2 reaches the host machine from the Android emulator.
-  // Replace with your PC's LAN IP when testing on a physical device.
-  static const _defaultServerUrl = 'http://10.0.2.2:8000';
+  // IP LAN du PC de dev (téléphone sur le même Wi-Fi). Modifiable via le
+  // bouton serveur dans la barre du haut.
+  static const _defaultServerUrl = 'http://192.168.1.149:8000';
+  static const _prefsOcrUrl = 'ocr_server_url';
 
   final _picker = ImagePicker();
   String _serverUrl = _defaultServerUrl;
@@ -33,15 +38,40 @@ class _ScanScreenState extends State<ScanScreen> {
 
   OcrService get _service => OcrService(baseUrl: _serverUrl);
 
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      final saved = prefs.getString(_prefsOcrUrl);
+      if (saved != null && mounted) setState(() => _serverUrl = saved);
+    });
+  }
+
   Future<void> _pickImage(ImageSource source) async {
-    final picked = await _picker.pickImage(
-      source: source,
-      maxWidth: 2000,
-      imageQuality: 85,
-    );
-    if (picked == null) return;
+    final XFile? picked;
+    try {
+      picked = await _picker.pickImage(
+        source: source,
+        maxWidth: 2000,
+        imageQuality: 85,
+      );
+    } on PlatformException catch (e) {
+      setState(() {
+        _error = source == ImageSource.camera
+            ? 'Impossible d’ouvrir l’appareil photo (${e.code}). '
+                'Vérifiez qu’une app caméra est installée et que la '
+                'permission est accordée dans les réglages Android.'
+            : 'Impossible d’ouvrir la galerie (${e.code}). '
+                'Vérifiez l’accès aux photos dans les réglages Android.';
+      });
+      return;
+    } catch (e) {
+      setState(() => _error = 'Erreur lors de la sélection de l’image : $e');
+      return;
+    }
+    if (picked == null) return; // annulé par l'utilisateur
     setState(() {
-      _image = File(picked.path);
+      _image = File(picked!.path);
       _result = null;
       _error = null;
     });
@@ -62,7 +92,7 @@ class _ScanScreenState extends State<ScanScreen> {
     } on OcrException catch (e) {
       setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Unexpected error: $e');
+      setState(() => _error = 'Erreur inattendue : $e');
     } finally {
       setState(() => _busy = false);
     }
@@ -73,27 +103,57 @@ class _ScanScreenState extends State<ScanScreen> {
     final value = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('OCR server URL'),
+        title: const Text('Serveur OCR'),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.url,
-          decoration: const InputDecoration(hintText: 'http://192.168.1.10:8000'),
+          decoration:
+              const InputDecoration(hintText: 'http://192.168.1.10:8000'),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: const Text('Annuler'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Save'),
+            child: const Text('Enregistrer'),
           ),
         ],
       ),
     );
     if (value != null && value.isNotEmpty) {
-      setState(() => _serverUrl = value.replaceAll(RegExp(r'/+$'), ''));
+      final cleaned = value.replaceAll(RegExp(r'/+$'), '');
+      setState(() => _serverUrl = cleaned);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsOcrUrl, cleaned);
     }
+  }
+
+  Future<void> _logout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Déconnexion'),
+        content: const Text('Voulez-vous vous déconnecter ?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Se déconnecter'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await SopatApi.instance.logout();
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+    );
   }
 
   Future<void> _createExpense() async {
@@ -110,7 +170,8 @@ class _ScanScreenState extends State<ScanScreen> {
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
-          icon: const Icon(Icons.check_circle, color: Colors.green, size: 40),
+          icon: const Icon(Icons.check_circle,
+              color: SopatColors.emerald, size: 40),
           title: Text('Dépense ${created.reference} créée'),
           content: Text(
             budget?.approvedBudget != null
@@ -136,26 +197,53 @@ class _ScanScreenState extends State<ScanScreen> {
     if (text == null || text.isEmpty) return;
     Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Text copied to clipboard')),
+      const SnackBar(content: Text('Texte copié')),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final email = SopatApi.instance.email;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SOPAT Handwriting OCR'),
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('SOPAT',
+                style: TextStyle(letterSpacing: 3, fontSize: 16)),
+            Text('Scan des dépenses',
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w400,
+                    color: Color(0xBBF5F0E8))),
+          ],
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'Server URL',
+            icon: const Icon(Icons.dns_outlined),
+            tooltip: 'Serveur OCR',
             onPressed: _editServerUrl,
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Déconnexion',
+            onPressed: _logout,
           ),
         ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (email != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                'Connecté : $email',
+                style: const TextStyle(
+                    fontSize: 12, color: SopatColors.textMuted),
+              ),
+            ),
           _ImagePreview(image: _image),
           const SizedBox(height: 16),
           if (_busy) const _BusyIndicator(),
@@ -163,7 +251,7 @@ class _ScanScreenState extends State<ScanScreen> {
           if (_result != null) ...[
             _ResultCard(result: _result!, onCopy: _copyText),
             const SizedBox(height: 12),
-            FilledButton.tonalIcon(
+            FilledButton.icon(
               onPressed: _createExpense,
               icon: const Icon(Icons.receipt_long),
               label: const Text('Créer une dépense SOPAT'),
@@ -180,15 +268,16 @@ class _ScanScreenState extends State<ScanScreen> {
                 child: FilledButton.icon(
                   onPressed: _busy ? null : () => _pickImage(ImageSource.camera),
                   icon: const Icon(Icons.photo_camera),
-                  label: const Text('Camera'),
+                  label: const Text('Caméra'),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _busy ? null : () => _pickImage(ImageSource.gallery),
+                  onPressed:
+                      _busy ? null : () => _pickImage(ImageSource.gallery),
                   icon: const Icon(Icons.photo_library),
-                  label: const Text('Gallery'),
+                  label: const Text('Galerie'),
                 ),
               ),
             ],
@@ -206,23 +295,25 @@ class _ImagePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: image == null
           ? Container(
               height: 220,
-              color: theme.colorScheme.surfaceContainerHighest,
-              child: Column(
+              decoration: BoxDecoration(
+                color: SopatColors.surface,
+                border: Border.all(color: SopatColors.border),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.document_scanner_outlined,
-                      size: 56, color: theme.colorScheme.outline),
-                  const SizedBox(height: 12),
+                      size: 56, color: SopatColors.textMuted),
+                  SizedBox(height: 12),
                   Text(
-                    'Take a photo of handwritten notes',
-                    style: theme.textTheme.bodyMedium
-                        ?.copyWith(color: theme.colorScheme.outline),
+                    'Photographiez un reçu ou une note manuscrite',
+                    style: TextStyle(color: SopatColors.textMuted),
                   ),
                 ],
               ),
@@ -243,7 +334,8 @@ class _BusyIndicator extends StatelessWidget {
         children: [
           CircularProgressIndicator(),
           SizedBox(height: 12),
-          Text('Extracting handwriting…'),
+          Text('Extraction du texte…',
+              style: TextStyle(color: SopatColors.textMuted)),
         ],
       ),
     );
@@ -258,21 +350,24 @@ class _ErrorCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Card(
-      color: theme.colorScheme.errorContainer,
+      color: const Color(0xFFFBEEEC),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: SopatColors.red.withValues(alpha: 0.3)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(message,
-                style: TextStyle(color: theme.colorScheme.onErrorContainer)),
+            Text(message, style: const TextStyle(color: SopatColors.red)),
             const SizedBox(height: 8),
             TextButton.icon(
               onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              icon: const Icon(Icons.refresh, color: SopatColors.accent),
+              label: const Text('Réessayer',
+                  style: TextStyle(color: SopatColors.accent)),
             ),
           ],
         ),
@@ -287,10 +382,10 @@ class _ResultCard extends StatelessWidget {
   final OcrResult result;
   final VoidCallback onCopy;
 
-  Color _confidenceColor(BuildContext context, double confidence) {
-    if (confidence >= 0.85) return Colors.green;
-    if (confidence >= 0.6) return Colors.orange;
-    return Theme.of(context).colorScheme.error;
+  Color _confidenceColor(double confidence) {
+    if (confidence >= 0.85) return SopatColors.emerald;
+    if (confidence >= 0.6) return SopatColors.amber;
+    return SopatColors.red;
   }
 
   @override
@@ -304,11 +399,13 @@ class _ResultCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Text('Recognized text', style: theme.textTheme.titleMedium),
+                Text('Texte reconnu',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(color: SopatColors.text)),
                 const Spacer(),
                 IconButton(
-                  icon: const Icon(Icons.copy),
-                  tooltip: 'Copy all',
+                  icon: const Icon(Icons.copy, color: SopatColors.textMuted),
+                  tooltip: 'Tout copier',
                   onPressed: onCopy,
                 ),
               ],
@@ -322,13 +419,14 @@ class _ResultCard extends StatelessWidget {
                   children: [
                     Expanded(
                       child: SelectableText(line.text,
-                          style: theme.textTheme.bodyLarge),
+                          style: theme.textTheme.bodyLarge
+                              ?.copyWith(color: SopatColors.text)),
                     ),
                     const SizedBox(width: 8),
                     Text(
                       '${(line.confidence * 100).round()}%',
                       style: theme.textTheme.labelSmall?.copyWith(
-                        color: _confidenceColor(context, line.confidence),
+                        color: _confidenceColor(line.confidence),
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -337,10 +435,10 @@ class _ResultCard extends StatelessWidget {
               ),
             const SizedBox(height: 8),
             Text(
-              'Overall ${(result.confidence * 100).round()}% · '
+              'Global ${(result.confidence * 100).round()}% · '
               '${result.processingTime.toStringAsFixed(1)}s',
               style: theme.textTheme.labelSmall
-                  ?.copyWith(color: theme.colorScheme.outline),
+                  ?.copyWith(color: SopatColors.textMuted),
             ),
           ],
         ),

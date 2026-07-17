@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
 import '../models/ocr_result.dart';
+import 'image_upload.dart';
 
 /// Client for the SOPAT OCR backend (POST /ocr, GET /health).
 class OcrService {
@@ -30,7 +32,12 @@ class OcrService {
   /// Upload an image file and return the recognized text.
   Future<OcrResult> extractText(File image) async {
     final request = http.MultipartRequest('POST', _uri('/ocr'));
-    request.files.add(await http.MultipartFile.fromPath('image', image.path));
+    try {
+      request.files.add(await imagePart(image));
+    } on EmptyImageException {
+      throw const OcrException(
+          'L’image sélectionnée est vide ou illisible. Reprenez la photo.');
+    }
 
     http.Response response;
     try {
@@ -38,9 +45,13 @@ class OcrService {
       response = await http.Response.fromStream(streamed);
     } on SocketException {
       throw const OcrException(
-          'Cannot reach the OCR server. Check the server URL in settings.');
+          'Serveur OCR injoignable. Vérifiez l’URL du serveur OCR.');
+    } on TimeoutException {
+      throw const OcrException(
+          'Délai d’attente dépassé. Le serveur OCR ne répond pas — '
+          'vérifiez le réseau Wi-Fi et le pare-feu du PC.');
     } on HttpException {
-      throw const OcrException('Connection to the OCR server failed.');
+      throw const OcrException('La connexion au serveur OCR a échoué.');
     }
 
     final Map<String, dynamic> body;
@@ -48,12 +59,12 @@ class OcrService {
       body = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     } catch (_) {
       throw OcrException(
-          'Unexpected response from server (HTTP ${response.statusCode}).');
+          'Réponse inattendue du serveur (HTTP ${response.statusCode}).');
     }
 
     if (response.statusCode == 200 && body['success'] == true) {
       return OcrResult.fromJson(body);
     }
-    throw OcrException(body['error'] as String? ?? 'OCR failed.');
+    throw OcrException(body['error'] as String? ?? 'Échec de l’OCR.');
   }
 }

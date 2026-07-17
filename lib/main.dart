@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'screens/login_screen.dart';
 import 'screens/scan_screen.dart';
 import 'services/sopat_api.dart';
+import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,13 +17,14 @@ class SopatOcrApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SOPAT OCR',
+      title: 'SOPAT Réalisation',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E7D32)),
-        useMaterial3: true,
-      ),
-      home: const ScanScreen(),
+      theme: sopatTheme(),
+      // Connexion obligatoire au premier lancement ; « Se souvenir de moi »
+      // conserve la session (cookie iron-session) entre les lancements.
+      home: SopatApi.instance.isLoggedIn
+          ? const ScanScreen()
+          : const LoginScreen(),
     );
   }
 }

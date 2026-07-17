@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/project.dart';
+import 'image_upload.dart';
 
 class SopatApiException implements Exception {
   final String message;
@@ -17,75 +19,104 @@ class SopatApiException implements Exception {
   String toString() => message;
 }
 
-/// Client for the SOPAT ERP (Next.js). Authenticates with the same
-/// iron-session cookie as the web app and keeps it across restarts.
+/// Client for the SOPAT ERP (Next.js). Authenticates against the mobile API
+/// (POST /api/mobile/auth/login) — mêmes identifiants que le back-office web,
+/// mais via un jeton JWT Bearer (fonctionne sur Chrome Web, Android et iOS,
+/// contrairement au cookie qui ne passe pas en cross-origin dans un navigateur).
 class SopatApi {
   SopatApi._();
   static final SopatApi instance = SopatApi._();
 
-  static const _prefsBaseUrl = 'sopat_base_url';
-  static const _prefsCookie = 'sopat_cookie';
+  static const _prefsToken = 'sopat_token';
+  static const _prefsRole = 'sopat_role';
+  static const _prefsEmail = 'sopat_email';
 
-  String _baseUrl = 'http://10.0.2.2:3000';
-  String? _cookie;
+  /// URL du back-office SOPAT — fixe. IP LAN du PC de dev (le téléphone doit
+  /// être sur le même réseau Wi-Fi). À changer ici pour un autre déploiement.
+  static const baseUrl = 'http://192.168.1.149:3000';
+
+  String? _token;
+  String? _role;
+  String? _email;
   final _client = http.Client();
 
-  String get baseUrl => _baseUrl;
-  bool get isLoggedIn => _cookie != null;
+  bool get isLoggedIn => _token != null;
+  String? get role => _role;
+  String? get email => _email;
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
-    _baseUrl = prefs.getString(_prefsBaseUrl) ?? _baseUrl;
-    _cookie = prefs.getString(_prefsCookie);
-  }
-
-  Future<void> setBaseUrl(String url) async {
-    _baseUrl = url.replaceAll(RegExp(r'/+$'), '');
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsBaseUrl, _baseUrl);
+    _token = prefs.getString(_prefsToken);
+    _role = prefs.getString(_prefsRole);
+    _email = prefs.getString(_prefsEmail);
   }
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
-        'Cookie': ?_cookie,
+        if (_token != null) 'Authorization': 'Bearer $_token',
       };
 
-  /// POST /api/auth/login — stores the session cookies on success.
-  Future<void> login(String email, String password) async {
+  /// POST /api/mobile/auth/login — mêmes identifiants que le back-office web
+  /// (table users, bcrypt), renvoie un jeton JWT. Refuse les rôles hors équipe
+  /// Réalisation. Avec [rememberMe], le jeton est conservé après fermeture.
+  Future<void> login(
+    String email,
+    String password, {
+    bool rememberMe = false,
+  }) async {
     final http.Response response;
     try {
       response = await _client
           .post(
-            Uri.parse('$_baseUrl/api/auth/login'),
+            Uri.parse('$baseUrl/api/mobile/auth/login'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'email': email, 'password': password}),
           )
-          .timeout(const Duration(seconds: 20));
+          .timeout(const Duration(seconds: 15));
     } on SocketException {
       throw const SopatApiException(
-          'Serveur SOPAT injoignable. Vérifiez l’URL dans les réglages.');
-    }
-
-    if (response.statusCode != 200) {
+          'Serveur SOPAT injoignable. Vérifiez que le serveur est démarré '
+          'et que le téléphone est sur le même réseau Wi-Fi.');
+    } on TimeoutException {
+      throw const SopatApiException(
+          'Délai d’attente dépassé. Le serveur SOPAT ne répond pas — '
+          'vérifiez le réseau Wi-Fi et le pare-feu du PC.');
+    } on http.ClientException catch (e) {
       throw SopatApiException(
-        _errorFrom(response, 'Échec de la connexion.'),
-        statusCode: response.statusCode,
-      );
+          'Connexion au serveur impossible (${e.message}). Vérifiez le réseau.');
     }
 
-    final cookie = _extractCookies(response);
-    if (cookie == null) {
+    final body = _decode(response); // lève une SopatApiException si status >= 400
+
+    final token = body['token'] as String?;
+    final role = body['role'] as String? ?? '';
+    if (token == null) {
       throw const SopatApiException('Session non reçue du serveur.');
     }
-    _cookie = cookie;
+    _token = token;
+    _role = role;
+    _email = email;
+
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsCookie, cookie);
+    if (rememberMe) {
+      await prefs.setString(_prefsToken, token);
+      await prefs.setString(_prefsRole, role);
+      await prefs.setString(_prefsEmail, email);
+    } else {
+      // Session en mémoire uniquement — ne survit pas au redémarrage.
+      await prefs.remove(_prefsToken);
+      await prefs.remove(_prefsRole);
+      // On garde l'email pour préremplir le prochain login.
+      await prefs.setString(_prefsEmail, email);
+    }
   }
 
   Future<void> logout() async {
-    _cookie = null;
+    _token = null;
+    _role = null;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_prefsCookie);
+    await prefs.remove(_prefsToken);
+    await prefs.remove(_prefsRole);
   }
 
   /// GET /api/mobile/projects
@@ -121,11 +152,16 @@ class SopatApi {
     };
 
     final request =
-        http.MultipartRequest('POST', Uri.parse('$_baseUrl/api/mobile/expenses'));
-    if (_cookie != null) request.headers['Cookie'] = _cookie!;
+        http.MultipartRequest('POST', Uri.parse('$baseUrl/api/mobile/expenses'));
+    if (_token != null) request.headers['Authorization'] = 'Bearer $_token';
     request.fields['data'] = jsonEncode(payload);
     if (image != null) {
-      request.files.add(await http.MultipartFile.fromPath('image', image.path));
+      try {
+        request.files.add(await imagePart(image));
+      } on EmptyImageException {
+        throw const SopatApiException(
+            'La photo est vide ou illisible. Reprenez la photo.');
+      }
     }
 
     http.Response response;
@@ -134,6 +170,9 @@ class SopatApi {
       response = await http.Response.fromStream(streamed);
     } on SocketException {
       throw const SopatApiException('Serveur SOPAT injoignable.');
+    } on TimeoutException {
+      throw const SopatApiException(
+          'Délai d’attente dépassé lors de l’envoi de la dépense.');
     }
     return ExpenseCreated.fromJson(_decode(response));
   }
@@ -142,10 +181,13 @@ class SopatApi {
     final http.Response response;
     try {
       response = await _client
-          .get(Uri.parse('$_baseUrl$path'), headers: _headers)
+          .get(Uri.parse('$baseUrl$path'), headers: _headers)
           .timeout(const Duration(seconds: 30));
     } on SocketException {
       throw const SopatApiException('Serveur SOPAT injoignable.');
+    } on TimeoutException {
+      throw const SopatApiException(
+          'Délai d’attente dépassé. Le serveur SOPAT ne répond pas.');
     }
     return _decode(response);
   }
@@ -169,25 +211,4 @@ class SopatApi {
     return body;
   }
 
-  String _errorFrom(http.Response response, String fallback) {
-    try {
-      final body = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-      return body['error'] as String? ?? fallback;
-    } catch (_) {
-      return fallback;
-    }
-  }
-
-  /// Pulls the `sopat_session` / `sopat_auth` cookies out of the combined
-  /// Set-Cookie header (the http package folds them into one string).
-  static String? _extractCookies(http.Response response) {
-    final raw = response.headers['set-cookie'];
-    if (raw == null) return null;
-    final pairs = <String>[];
-    for (final name in ['sopat_session', 'sopat_auth']) {
-      final match = RegExp('$name=([^;,\\s]+)').firstMatch(raw);
-      if (match != null) pairs.add('$name=${match.group(1)}');
-    }
-    return pairs.isEmpty ? null : pairs.join('; ');
-  }
 }
