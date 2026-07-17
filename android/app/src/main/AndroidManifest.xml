@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Caméra intégrée (plugin camera / CameraX) — le plugin demande la
+         permission au premier lancement. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- Package visibility (Android 11+) : sans cette déclaration, image_picker
          ne trouve pas d'app appareil photo et le bouton Caméra ne fait rien. -->
     <queries>

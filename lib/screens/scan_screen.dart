@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -10,6 +8,7 @@ import '../models/project.dart';
 import '../services/ocr_service.dart';
 import '../services/sopat_api.dart';
 import '../theme.dart';
+import 'camera_screen.dart';
 import 'expense_form_screen.dart';
 import 'login_screen.dart';
 
@@ -23,15 +22,17 @@ class ScanScreen extends StatefulWidget {
 }
 
 class _ScanScreenState extends State<ScanScreen> {
-  // IP LAN du PC de dev (téléphone sur le même Wi-Fi). Modifiable via le
+  // Backend OCR déployé sur Railway — accessible depuis n'importe quel
+  // réseau (plus besoin d'être sur le Wi-Fi du PC). Modifiable via le
   // bouton serveur dans la barre du haut.
-  static const _defaultServerUrl = 'http://192.168.1.149:8000';
+  static const _defaultServerUrl = 'https://sopatbackend-production.up.railway.app';
   static const _prefsOcrUrl = 'ocr_server_url';
 
   final _picker = ImagePicker();
   String _serverUrl = _defaultServerUrl;
 
-  File? _image;
+  XFile? _image;
+  Uint8List? _imageBytes;
   OcrResult? _result;
   String? _error;
   bool _busy = false;
@@ -47,22 +48,28 @@ class _ScanScreenState extends State<ScanScreen> {
     });
   }
 
-  Future<void> _pickImage(ImageSource source) async {
+  /// Caméra intégrée (aperçu → capture → prévisualisation → utiliser).
+  Future<void> _openCamera() async {
+    final captured = await Navigator.push<XFile>(
+      context,
+      MaterialPageRoute(builder: (_) => const CameraScreen()),
+    );
+    if (captured != null) await _useImage(captured);
+  }
+
+  /// Sélection depuis la galerie / les fichiers.
+  Future<void> _pickFromGallery() async {
     final XFile? picked;
     try {
       picked = await _picker.pickImage(
-        source: source,
+        source: ImageSource.gallery,
         maxWidth: 2000,
         imageQuality: 85,
       );
     } on PlatformException catch (e) {
       setState(() {
-        _error = source == ImageSource.camera
-            ? 'Impossible d’ouvrir l’appareil photo (${e.code}). '
-                'Vérifiez qu’une app caméra est installée et que la '
-                'permission est accordée dans les réglages Android.'
-            : 'Impossible d’ouvrir la galerie (${e.code}). '
-                'Vérifiez l’accès aux photos dans les réglages Android.';
+        _error = 'Impossible d’ouvrir la galerie (${e.code}). '
+            'Vérifiez l’accès aux photos dans les réglages.';
       });
       return;
     } catch (e) {
@@ -70,8 +77,19 @@ class _ScanScreenState extends State<ScanScreen> {
       return;
     }
     if (picked == null) return; // annulé par l'utilisateur
+    await _useImage(picked);
+  }
+
+  Future<void> _useImage(XFile picked) async {
+    final bytes = await picked.readAsBytes();
+    if (bytes.isEmpty) {
+      setState(() =>
+          _error = 'L’image sélectionnée est vide ou illisible. Reprenez la photo.');
+      return;
+    }
     setState(() {
-      _image = File(picked!.path);
+      _image = picked;
+      _imageBytes = bytes;
       _result = null;
       _error = null;
     });
@@ -176,9 +194,10 @@ class _ScanScreenState extends State<ScanScreen> {
           content: Text(
             budget?.approvedBudget != null
                 ? 'En attente de validation par la direction.\n\n'
-                    'Budget du projet : ${budget!.spent.toStringAsFixed(0)} / '
-                    '${budget.approvedBudget!.toStringAsFixed(0)}'
-                    '${budget.percentSpent != null ? ' (${budget.percentSpent}%)' : ''}'
+                    'Budget consommé : ${formatAmount(budget!.spent)} / '
+                    '${formatAmount(budget.approvedBudget!)}'
+                    '${budget.percentSpent != null ? ' (${budget.percentSpent} %)' : ''}\n'
+                    'Dépenses en attente : +${formatAmount(budget.pendingTotal)}'
                 : 'En attente de validation par la direction.',
           ),
           actions: [
@@ -244,7 +263,7 @@ class _ScanScreenState extends State<ScanScreen> {
                     fontSize: 12, color: SopatColors.textMuted),
               ),
             ),
-          _ImagePreview(image: _image),
+          _ImagePreview(imageBytes: _imageBytes),
           const SizedBox(height: 16),
           if (_busy) const _BusyIndicator(),
           if (_error != null) _ErrorCard(message: _error!, onRetry: _runOcr),
@@ -266,7 +285,7 @@ class _ScanScreenState extends State<ScanScreen> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: _busy ? null : () => _pickImage(ImageSource.camera),
+                  onPressed: _busy ? null : _openCamera,
                   icon: const Icon(Icons.photo_camera),
                   label: const Text('Caméra'),
                 ),
@@ -274,8 +293,7 @@ class _ScanScreenState extends State<ScanScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed:
-                      _busy ? null : () => _pickImage(ImageSource.gallery),
+                  onPressed: _busy ? null : _pickFromGallery,
                   icon: const Icon(Icons.photo_library),
                   label: const Text('Galerie'),
                 ),
@@ -289,15 +307,15 @@ class _ScanScreenState extends State<ScanScreen> {
 }
 
 class _ImagePreview extends StatelessWidget {
-  const _ImagePreview({required this.image});
+  const _ImagePreview({required this.imageBytes});
 
-  final File? image;
+  final Uint8List? imageBytes;
 
   @override
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: image == null
+      child: imageBytes == null
           ? Container(
               height: 220,
               decoration: BoxDecoration(
@@ -318,7 +336,7 @@ class _ImagePreview extends StatelessWidget {
                 ],
               ),
             )
-          : Image.file(image!, height: 220, fit: BoxFit.cover),
+          : Image.memory(imageBytes!, height: 220, fit: BoxFit.cover),
     );
   }
 }
@@ -382,12 +400,6 @@ class _ResultCard extends StatelessWidget {
   final OcrResult result;
   final VoidCallback onCopy;
 
-  Color _confidenceColor(double confidence) {
-    if (confidence >= 0.85) return SopatColors.emerald;
-    if (confidence >= 0.6) return SopatColors.amber;
-    return SopatColors.red;
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -414,28 +426,12 @@ class _ResultCard extends StatelessWidget {
             for (final line in result.lines)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: SelectableText(line.text,
-                          style: theme.textTheme.bodyLarge
-                              ?.copyWith(color: SopatColors.text)),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '${(line.confidence * 100).round()}%',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: _confidenceColor(line.confidence),
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
+                child: SelectableText(line.text,
+                    style: theme.textTheme.bodyLarge
+                        ?.copyWith(color: SopatColors.text)),
               ),
             const SizedBox(height: 8),
             Text(
-              'Global ${(result.confidence * 100).round()}% · '
               '${result.processingTime.toStringAsFixed(1)}s',
               style: theme.textTheme.labelSmall
                   ?.copyWith(color: SopatColors.textMuted),

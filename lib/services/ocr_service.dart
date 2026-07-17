@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
+import 'package:cross_file/cross_file.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/ocr_result.dart';
@@ -30,7 +30,7 @@ class OcrService {
   }
 
   /// Upload an image file and return the recognized text.
-  Future<OcrResult> extractText(File image) async {
+  Future<OcrResult> extractText(XFile image) async {
     final request = http.MultipartRequest('POST', _uri('/ocr'));
     try {
       request.files.add(await imagePart(image));
@@ -43,15 +43,13 @@ class OcrService {
     try {
       final streamed = await request.send().timeout(_timeout);
       response = await http.Response.fromStream(streamed);
-    } on SocketException {
-      throw const OcrException(
-          'Serveur OCR injoignable. Vérifiez l’URL du serveur OCR.');
     } on TimeoutException {
       throw const OcrException(
           'Délai d’attente dépassé. Le serveur OCR ne répond pas — '
           'vérifiez le réseau Wi-Fi et le pare-feu du PC.');
-    } on HttpException {
-      throw const OcrException('La connexion au serveur OCR a échoué.');
+    } on http.ClientException catch (e) {
+      throw OcrException(
+          'Serveur OCR injoignable (${e.message}). Vérifiez l’URL du serveur OCR.');
     }
 
     final Map<String, dynamic> body;

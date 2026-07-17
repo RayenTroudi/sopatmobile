@@ -1,5 +1,4 @@
-import 'dart:io';
-
+import 'package:cross_file/cross_file.dart';
 import 'package:flutter/material.dart';
 
 import '../models/project.dart';
@@ -18,7 +17,7 @@ class ExpenseFormScreen extends StatefulWidget {
   final String ocrText;
 
   /// Photo scannée — jointe à la dépense et affichée dans le panneau admin.
-  final File? image;
+  final XFile? image;
 
   @override
   State<ExpenseFormScreen> createState() => _ExpenseFormScreenState();
@@ -309,11 +308,16 @@ class _BudgetBar extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            'Budget : ${project.spent.toStringAsFixed(0)} / '
-            '${project.approvedBudget!.toStringAsFixed(0)} ${project.currency}'
-            '${percent != null ? ' ($percent%)' : ''}',
+            'Consommé : ${formatAmount(project.spent)} / '
+            '${formatAmount(project.approvedBudget!)} ${project.currency}'
+            '${percent != null ? ' ($percent %)' : ''}',
             style: theme.textTheme.labelSmall,
           ),
+          if (project.pendingTotal > 0)
+            Text(
+              'En attente de validation : +${formatAmount(project.pendingTotal)} ${project.currency}',
+              style: theme.textTheme.labelSmall?.copyWith(color: Colors.orange),
+            ),
         ],
       ),
     );

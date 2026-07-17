@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
+import 'package:cross_file/cross_file.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -73,17 +73,14 @@ class SopatApi {
             body: jsonEncode({'email': email, 'password': password}),
           )
           .timeout(const Duration(seconds: 15));
-    } on SocketException {
-      throw const SopatApiException(
-          'Serveur SOPAT injoignable. Vérifiez que le serveur est démarré '
-          'et que le téléphone est sur le même réseau Wi-Fi.');
     } on TimeoutException {
       throw const SopatApiException(
           'Délai d’attente dépassé. Le serveur SOPAT ne répond pas — '
           'vérifiez le réseau Wi-Fi et le pare-feu du PC.');
     } on http.ClientException catch (e) {
       throw SopatApiException(
-          'Connexion au serveur impossible (${e.message}). Vérifiez le réseau.');
+          'Serveur SOPAT injoignable (${e.message}). Vérifiez que le serveur '
+          'est démarré et que le téléphone est sur le même réseau Wi-Fi.');
     }
 
     final body = _decode(response); // lève une SopatApiException si status >= 400
@@ -138,7 +135,7 @@ class SopatApi {
     String currency = 'TND',
     String? ocrRawText,
     Map<String, dynamic>? ocrSuggested,
-    File? image,
+    XFile? image,
   }) async {
     final payload = {
       'projectId': ?projectId,
@@ -168,11 +165,11 @@ class SopatApi {
     try {
       final streamed = await request.send().timeout(const Duration(seconds: 60));
       response = await http.Response.fromStream(streamed);
-    } on SocketException {
-      throw const SopatApiException('Serveur SOPAT injoignable.');
     } on TimeoutException {
       throw const SopatApiException(
           'Délai d’attente dépassé lors de l’envoi de la dépense.');
+    } on http.ClientException catch (e) {
+      throw SopatApiException('Serveur SOPAT injoignable (${e.message}).');
     }
     return ExpenseCreated.fromJson(_decode(response));
   }
@@ -183,11 +180,11 @@ class SopatApi {
       response = await _client
           .get(Uri.parse('$baseUrl$path'), headers: _headers)
           .timeout(const Duration(seconds: 30));
-    } on SocketException {
-      throw const SopatApiException('Serveur SOPAT injoignable.');
     } on TimeoutException {
       throw const SopatApiException(
           'Délai d’attente dépassé. Le serveur SOPAT ne répond pas.');
+    } on http.ClientException catch (e) {
+      throw SopatApiException('Serveur SOPAT injoignable (${e.message}).');
     }
     return _decode(response);
   }

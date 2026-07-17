@@ -1,5 +1,4 @@
-import 'dart:io';
-
+import 'package:cross_file/cross_file.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 
@@ -10,16 +9,17 @@ class EmptyImageException implements Exception {
   const EmptyImageException();
 }
 
-/// Construit la partie multipart `image` à partir des OCTETS du fichier
-/// (et non d'un flux paresseux sur le chemin). Sur Android, image_picker
-/// ré-encode la photo dans un fichier temporaire dont le flux paresseux
-/// de `MultipartFile.fromPath` peut arriver vide au serveur ; lire les
-/// octets explicitement et fixer le content-type corrige ce cas.
-Future<http.MultipartFile> imagePart(File image, {String field = 'image'}) async {
+/// Construit la partie multipart `image` à partir des OCTETS du fichier.
+///
+/// Utilise `XFile` (image_picker) plutôt que `dart:io File` : `File` n'existe
+/// pas sur Flutter Web (l'image du picker n'est qu'un blob navigateur), donc
+/// tout code qui l'instancie plante au runtime en web. `XFile.readAsBytes()`
+/// fonctionne identiquement sur Web, Android et iOS.
+Future<http.MultipartFile> imagePart(XFile image, {String field = 'image'}) async {
   final bytes = await image.readAsBytes();
   if (bytes.isEmpty) throw const EmptyImageException();
 
-  final ext = image.path.split('.').last.toLowerCase();
+  final ext = image.name.split('.').last.toLowerCase();
   final subtype = switch (ext) {
     'png' => 'png',
     'webp' => 'webp',
