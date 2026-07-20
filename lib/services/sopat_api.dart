@@ -31,9 +31,8 @@ class SopatApi {
   static const _prefsRole = 'sopat_role';
   static const _prefsEmail = 'sopat_email';
 
-  /// URL du back-office SOPAT — fixe. IP LAN du PC de dev (le téléphone doit
-  /// être sur le même réseau Wi-Fi). À changer ici pour un autre déploiement.
-  static const baseUrl = 'http://192.168.1.149:3000';
+  /// URL du back-office SOPAT — déploiement Vercel de production.
+  static const baseUrl = 'https://sopat.vercel.app';
 
   String? _token;
   String? _role;
