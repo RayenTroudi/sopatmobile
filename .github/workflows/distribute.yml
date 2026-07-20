@@ -30,9 +30,14 @@ jobs:
       - name: Upload to Firebase App Distribution
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-service-account.json
+          APP_DISTRIBUTION_GROUPS: ${{ vars.APP_DISTRIBUTION_GROUPS }}
         run: |
-          npx firebase-tools@latest appdistribution:distribute \
-            build/app/outputs/flutter-apk/app-release.apk \
-            --app 1:1056701373497:android:38c81331a8d12f75a741e8 \
-            --groups "${{ vars.APP_DISTRIBUTION_GROUPS }}" \
+          args=(
+            build/app/outputs/flutter-apk/app-release.apk
+            --app 1:1056701373497:android:38c81331a8d12f75a741e8
             --release-notes "Automated build from ${{ github.sha }}"
+          )
+          if [ -n "$APP_DISTRIBUTION_GROUPS" ]; then
+            args+=(--groups "$APP_DISTRIBUTION_GROUPS")
+          fi
+          npx firebase-tools@latest appdistribution:distribute "${args[@]}"
